@@ -2,7 +2,9 @@ import streamlit as st
 from prophet import Prophet
 import altair as alt
 import pandas as pd
-
+from sqlalchemy import create_engine
+from sqlalchemy import text
+import datetime
 # Mapas de categorías y configuraciones de frecuencia
 category_map = {
     'STOLEN VEHICLE': 'VEHICLE - STOLEN',
@@ -25,6 +27,40 @@ freqmap = {
 
 # Conexión a la base de datos
 conn = st.connection("neon", type="sql")
+engine = create_engine(st.secrets["connections"]["neon"]["url"])
+
+arrow = """
+<style>
+    /* Estilos para la flecha minimalista */
+    .scroll-arrow {
+        display: block;
+        width: 50px;
+        height: 50px;
+        margin: 20px auto; /* Centrado */
+        font-size: 2em;
+        line-height: 50px;
+        text-align: center;
+        color: #FFFFFF;
+        text-decoration: none; /* Quita subrayado */
+        cursor: pointer;
+    }
+    .scroll-arrow:hover {
+        color: #FFFFFF;
+    }
+</style>
+
+<!-- Enlace con la flecha -->
+<a href="#target-section" class="scroll-arrow">&#8595;</a>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        document.querySelector(".scroll-arrow").addEventListener("click", function(event) {
+            event.preventDefault();
+            document.querySelector("#target-section").scrollIntoView({ behavior: 'smooth' });
+        });
+    });
+</script>
+"""
 
 # --------------- FUNCIONES AUXILIARES -----------------#
 
@@ -35,6 +71,7 @@ def format_quarter(date):
 
 def get_unique_places():
     query = "SELECT DISTINCT areaname FROM main"
+
     result = conn.query(query, ttl="10m")
     return result['areaname']
 
@@ -52,6 +89,7 @@ def build_conditions(chosen_crime, chosen_place):
 
 
 def fetch_grouped_data(crime_conditions, place_conditions, freq):
+    # Generar la query SQL
     query = f"""
         SELECT
             DATE_TRUNC('{freq[0]}', date) AS period,
@@ -63,8 +101,9 @@ def fetch_grouped_data(crime_conditions, place_conditions, freq):
         GROUP BY period
         ORDER BY period
     """
-    return conn.query(query, ttl="10m")
+    df = conn.query(query, ttl=0)
 
+    return df
 
 def apply_ponderation_to_data(grouped, apply_ponder):
     if apply_ponder:
@@ -130,32 +169,47 @@ def create_combined_chart(grouped, forecast):
         y2="yhat_upper:Q"
     ).properties(width=700, height=500)
 
-    return band_chart + line_chart
+    return band_chart + line_chart, combined_data
 
 
 def create_historical_chart(grouped):
     # Definir dominio para el eje Y
+    grouped = grouped[['period', 'count']].rename(columns={'period': 'ds', 'count': 'yhat'})
     return alt.Chart(grouped).mark_line(point=True).encode(
-        x=alt.X('period:T', title='Fecha'),
-        y=alt.Y('count:Q', title='Valor',
-                scale=alt.Scale(domain=[grouped['count'].min(), grouped['count'].max()])),
+        x=alt.X('ds:T', title='Fecha'),
+        y=alt.Y('yhat:Q', title='Valor',
+                scale=alt.Scale(domain=[grouped['yhat'].min(), grouped['yhat'].max()])),
         color=alt.value('lightblue')
-    ).properties(width=700, height=500)
+    ).properties(width=700, height=500), grouped
 
 
 def display_kpis(grouped, freq):
-    max_date = grouped.loc[grouped['count'].idxmax(), 'period']
-    min_date = grouped.loc[grouped['count'].idxmin(), 'period']
+    max_date = grouped.loc[grouped['yhat'].idxmax(), 'ds']
+    min_date = grouped.loc[grouped['yhat'].idxmin(), 'ds']
     max_period = format_quarter(max_date) if freq[0] == 'quarter' else max_date.strftime(freq[4])
     min_period = format_quarter(min_date) if freq[0] == 'quarter' else min_date.strftime(freq[4])
 
     with st.container():
-        cols = st.columns(4)
-        with cols[0]:
-            st.metric('Total', int(grouped['count'].sum()))
-        with cols[1]:
-            st.metric('Media', int(grouped['count'].mean()))
-        with cols[2]:
-            st.metric('Periodo con más crímenes', max_period)
-        with cols[3]:
-            st.metric('Periodo con menos crímenes', min_period)
+        st.metric('Total', int(grouped['yhat'].sum()))
+        st.metric('Media', int(grouped['yhat'].mean()))
+        st.metric('Periodo con más crímenes', max_period)
+        st.metric('Periodo con menos crímenes', min_period)
+
+def apply_pond(df):
+    df['rawpond'] = df.apply(
+            lambda row: 0.035 if 'ATTEMPT' in row['crimecodedesc'] or 'PETTY' in row['crimecodedesc'] or 'THROWING' in row[
+                'crimecodedesc'] else
+            0.1 if 'BURGLARY' in row['crimecodedesc'] else
+            0.125 if 'SHOTS' in row['crimecodedesc'] else
+            0.2,
+            axis=1
+        )
+    df['pond'] = df.apply(
+        lambda row: 0.2396657425039096 if 'ATTEMPT' in row['crimecodedesc'] or 'PETTY' in row['crimecodedesc'] or 'THROWING' in row[
+            'crimecodedesc'] else
+        0.6847592642968847 if 'BURGLARY' in row['crimecodedesc'] else
+        0.8559490803711058 if 'SHOTS' in row['crimecodedesc'] else
+        1.3695185285937694,
+        axis=1
+    )
+    return df

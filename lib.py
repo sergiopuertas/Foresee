@@ -20,9 +20,9 @@ category_map = {
 }
 
 freqmap = {
-    "Por mes": ["month", 1, 12, "MS", "%b %Y", [True, False]],
-    "Por semana": ["week", 1, 52, "W", "%d %b %Y", [True, True]],
-    "Por trimestre": ["quarter", 1, 8, "QS", None, [True, False]]
+    "Por mes": ["month", 1, 24, "MS", "%b %Y", [True, False]],
+    "Por semana": ["week", 1, 104, "W", "%d %b %Y", [True, True]],
+    "Por trimestre": ["quarter", 1, 16, "QS", None, [True, False]]
 }
 
 # Conexión a la base de datos

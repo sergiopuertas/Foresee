@@ -3,8 +3,7 @@ from prophet import Prophet
 import altair as alt
 import pandas as pd
 from sqlalchemy import create_engine
-from sqlalchemy import text
-import datetime
+
 # Mapas de categorías y configuraciones de frecuencia
 category_map = {
     'STOLEN VEHICLE': 'VEHICLE - STOLEN',
@@ -25,12 +24,7 @@ freqmap = {
     "Por trimestre": ["quarter", 1, 16, "QS", None, [True, False]]
 }
 
-# Conexión a la base de datos
-
-engine = create_engine(st.secrets["connections"]["neon"]["url"])
-conn = st.connection("neon", type="sql")
 # --------------- FUNCIONES AUXILIARES -----------------#
-
 
 def format_quarter(date):
     quarter = (date.month - 1) // 3 + 1

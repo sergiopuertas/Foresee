@@ -26,54 +26,15 @@ freqmap = {
 }
 
 # Conexión a la base de datos
-conn = st.connection("neon", type="sql")
+
 engine = create_engine(st.secrets["connections"]["neon"]["url"])
-
-arrow = """
-<style>
-    /* Estilos para la flecha minimalista */
-    .scroll-arrow {
-        display: block;
-        width: 50px;
-        height: 50px;
-        margin: 20px auto; /* Centrado */
-        font-size: 2em;
-        line-height: 50px;
-        text-align: center;
-        color: #FFFFFF;
-        text-decoration: none; /* Quita subrayado */
-        cursor: pointer;
-    }
-    .scroll-arrow:hover {
-        color: #FFFFFF;
-    }
-</style>
-
-<!-- Enlace con la flecha -->
-<a href="#target-section" class="scroll-arrow">&#8595;</a>
-
-<script>
-    document.addEventListener("DOMContentLoaded", function() {
-        document.querySelector(".scroll-arrow").addEventListener("click", function(event) {
-            event.preventDefault();
-            document.querySelector("#target-section").scrollIntoView({ behavior: 'smooth' });
-        });
-    });
-</script>
-"""
-
+conn = st.connection("neon", type="sql")
 # --------------- FUNCIONES AUXILIARES -----------------#
 
 
 def format_quarter(date):
     quarter = (date.month - 1) // 3 + 1
     return f"T{quarter} {date.year}"
-
-def get_unique_places():
-    query = "SELECT DISTINCT areaname FROM main"
-
-    result = conn.query(query, ttl="10m")
-    return result['areaname']
 
 
 def build_conditions(chosen_crime, chosen_place):
@@ -86,24 +47,6 @@ def build_conditions(chosen_crime, chosen_place):
     ) if chosen_place else "1=1"
 
     return crime_conditions, place_conditions
-
-
-def fetch_grouped_data(crime_conditions, place_conditions, freq):
-    # Generar la query SQL
-    query = f"""
-        SELECT
-            DATE_TRUNC('{freq[0]}', date) AS period,
-            COUNT(*) AS count,
-            AVG(pond) AS pond
-        FROM main
-        WHERE ({crime_conditions})
-          AND ({place_conditions})
-        GROUP BY period
-        ORDER BY period
-    """
-    df = conn.query(query, ttl=0)
-
-    return df
 
 def apply_ponderation_to_data(grouped, apply_ponder):
     if apply_ponder:

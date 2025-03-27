@@ -6,6 +6,9 @@ import altair as alt
 import pandas as pd
 from prophet import Prophet
 from sqlalchemy import text
+import uuid
+import sqlalchemy as sa
+import toml
 
 # Mapas de categorías y configuraciones de frecuencia
 category_map = {
@@ -27,25 +30,24 @@ freqmap = {
     "Por trimestre": ["quarter", 1, 16, "QS", None, [True, False]]
 }
 
-# Componentes de datos
 class DataComponents:
-    def __init__(self, conn):
-        self.conn = conn
+    def __init__(self, connection):
+        self.connection = connection
 
-    @st.cache_data
+    @st.cache_data(ttl=600)
     def get_secure_unique_places(_self, user_role, user_area):
-        area_condition = ""
-        if user_role != 'admin' and user_area:
-            area_condition = f" AND areaname = '{user_area}'"
+        area_condition = "" if user_role == 'admin' else f" AND areaname = {user_area}"
 
         query = f"SELECT DISTINCT areaname FROM main WHERE 1=1 {area_condition}"
-        result = _self.conn.query(query, ttl=0)
-        return [row[0] for row in result.values]
+        result = _self.connection.execute(text(query))
+        rows = result.fetchall()
+        return [row[0] for row in rows]
 
-    def secure_fetch_grouped_data(self, crime_conditions, place_conditions, freq):
+    @st.cache_data(ttl=600)
+    def secure_fetch_grouped_data(_self, crime_conditions, place_conditions, freq):
         query = f"""
             SELECT
-                DATE_TRUNC('{freq[0]}', date) AS period,
+                DATE_TRUNC(:freq, date) AS period,
                 COUNT(*) AS count,
                 AVG(pond) AS pond
             FROM main
@@ -53,51 +55,51 @@ class DataComponents:
             GROUP BY period
             ORDER BY period
         """
-        return self.conn.query(query, ttl = 0)
+        result = _self.connection.execute(text(query), {'freq': freq[0]})
+        rows = result.fetchall()
+        columns = result.keys()
+        return pd.DataFrame(rows, columns=columns) if rows else None
 
-    def get_user(self, username):
-        query = f"SELECT * FROM usuarios WHERE username = '{username}'"
-        result = self.conn.query(query, ttl=0)
+    @st.cache_data(ttl=600)
+    def get_user(_self, email):
+        query = f"SELECT * FROM usuarios WHERE email = \'{email}\' "
+        result = _self.connection.execute(text(query))
+        rows = result.fetchall()
+        columns = result.keys()
+        return pd.DataFrame(rows, columns=columns) if rows else None
 
-        return result.iloc[0] if not result.empty else None
-
-
-    def create_user(self, username, email, full_name, role, area, password):
+    def create_user(self, email, full_name, role, area, password):
+        user_id = uuid.uuid5(uuid.NAMESPACE_DNS, email)
+        query = """
+            INSERT INTO usuarios (id, email, full_name, role, area, password)
+            VALUES (:id, :email, :full_name, :role, :area, :password)
+        """
+        params = {
+            'id': str(user_id),
+            'email': email,
+            'full_name': full_name,
+            'role': role,
+            'area': area,
+            'password': password
+        }
         try:
-            # Usando SQLAlchemy directamente con parámetros seguros
-            query = """
-                INSERT INTO usuarios (username, email, full_name, role, area, password)
-                VALUES (:username, :email, :full_name, :role, :area, :password)
-            """
-
-            params = {
-                'username': username,
-                'email': email,
-                'full_name': full_name,
-                'role': role,
-                'area': area,
-                'password': password
-            }
-
-            # Ejecución segura con la conexión de Streamlit
-            with self.conn._instance.connect() as connection:
-                connection.execute(text(query), params)
-                connection.commit()
-
+            self.connection.execute(text(query), params)
+            self.connection.commit()
             return True
         except Exception as e:
             st.error(f"Error al crear usuario: {str(e)}")
             return False
 
-    def verify_login(self, username, plain_password):
+    @st.cache_data(ttl=600)
+    def verify_login(_self, email, plain_password):
+        query = f"SELECT password FROM usuarios WHERE email = \'{email}\' "
         try:
-            # Usar la conexión de Streamlit con parámetros seguros
-            query = f"SELECT password FROM usuarios WHERE username = \'{username}\'"
-            result = self.conn.query(query, ttl=0)
-            if result.empty:
+            result = _self.connection.execute(text(query))
+            row = result.fetchone()
+            if row is None:
                 return False
 
-            stored_hash = result.iloc[0]['password'].encode('utf-8')
+            stored_hash = row[0].encode('utf-8')
             return bcrypt.checkpw(plain_password.encode('utf-8'), stored_hash)
         except Exception as e:
             st.error(f"Error en verificación: {str(e)}")
@@ -149,7 +151,7 @@ class InteractionComponents:
 
                 with col_input2:
                     st.header("Cargar archivo CSV")
-                    uploaded_data = st.file_uploader("Archivo .csv", type=["csv"], label_visibility="collapsed")
+                    uploaded_data = st.file_uploader("Archivo .csv", type=["csv"], label_visibility="collapsed", on_change=st.cache_data.clear)
                     if uploaded_data is not None:
                         uploaded_df = pd.read_csv(uploaded_data)
                         st.session_state.new_data = pd.concat([
@@ -165,17 +167,16 @@ class InteractionComponents:
     def save_delete_data(conn):
         col_btn1, col_btn2, _ = st.columns((1, 1, 6))
         with col_btn1:
-            if st.button("Guardar datos"):
+            if st.button("Guardar datos",on_click=st.cache_data.clear):
                 if not st.session_state.new_data.empty:
                     with st.spinner("Guardando datos..."):
                         try:
-                            with conn._instance.begin() as connection:
-                                st.session_state.new_data.to_sql(
+                            st.session_state.new_data.to_sql(
                                     'main',
-                                    connection,
+                                    conn,
                                     if_exists='append',
                                     index=False
-                                )
+                            )
                             st.session_state.new_data = pd.DataFrame()
                             st.rerun()
                         except Exception as e:
@@ -187,31 +188,32 @@ class InteractionComponents:
     @staticmethod
     def user_create_form(data_components, get_places_func):
         with st.expander("🔒 Administración de usuarios - Registrar nuevo", expanded=False):
-            with st.form("register_form", clear_on_submit=True):
+            with st.form("register_form", clear_on_submit=True ):
                 col1, col2 = st.columns(2)
                 with col1:
-                    new_username = st.text_input("Nombre de usuario*")
                     new_name = st.text_input("Nombre completo*")
                     new_email = st.text_input("Email*")
+                    new_role = st.selectbox("Rol*", ["admin", "user"])
                 with col2:
                     new_password = st.text_input("Contraseña*", type="password")
-                    new_role = st.selectbox("Rol*", ["admin", "user"])
+                    confirm_password = st.text_input("Confirmar contraseña*", type="password")
                     new_area = st.selectbox("Área", get_places_func())
 
-                if st.form_submit_button("🎯 Registrar usuario"):
-                    if data_components.get_user(new_username) is not None:
+                if st.form_submit_button("🎯 Registrar usuario", on_click=st.cache_data.clear):
+                    if data_components.get_user(new_email) is not None:
                         st.error("❌ El usuario ya existe")
-                    elif not all([new_username, new_name, new_email, new_password]):
+                    elif not all([ new_name, new_email, new_password]):
                         st.error("❌ Todos los campos son obligatorios")
                     elif "@" not in new_email or "." not in new_email:
                         st.error("❌ El correo electrónico no es válido")
                     elif len(new_password) < 8:
                         st.error("❌ La contraseña debe tener al menos 8 caracteres")
+                    elif confirm_password != new_password:
+                        st.error("❌ Las contraseñas deben coincidir")
                     else:
                         try:
                             hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt(12)).decode('utf-8')
                             data_components.create_user(
-                                new_username,
                                 new_email,
                                 new_name,
                                 new_role,
@@ -220,8 +222,6 @@ class InteractionComponents:
                             )
 
                             st.success("✅ Usuario registrado exitosamente")
-                            time.sleep(1)
-                            st.rerun()
                         except Exception as e:
                             st.error(f"❌ Error al registrar: {str(e)}")
 
@@ -239,17 +239,17 @@ def handle_authentication(data_components):
             st.title("Bienvenido a Foresee")
             st.subheader("Por favor, inicie sesión")
             st.container(height=40, border=False)
-            username = st.text_input("Username")
+            mail = st.text_input("Email")
             password = st.text_input("Password", type="password")
             login_button = st.button("Login")
     if login_button:
-        user = data_components.get_user(username)
-        if user is not None and data_components.verify_login(username, password):
+        user = data_components.get_user(mail)
+        if user is not None and data_components.verify_login(mail, password):
             st.session_state["authentication_status"] = True
-            st.session_state["username"] = username
+            st.session_state["mail"] = mail
             st.session_state["user_info"] = {
-                'role': user['role'],
-                'area': user['area']
+                'role': user['role'].iloc[0],
+                'area': user['area'].iloc[0]
             }
             login_container.empty()
             st.rerun()

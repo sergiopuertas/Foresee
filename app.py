@@ -56,11 +56,8 @@ def main():
             chart, grouped = create_historical_chart(grouped)
 
         # Mostrar gráficos y KPIs
-        col_chart, col_kpi = st.columns((12, 2))
-        with col_chart:
-            st.altair_chart(chart, use_container_width=True)
-        with col_kpi:
-            display_kpis(combined if predict else grouped, freq)
+        st.altair_chart(chart, use_container_width=True)
+        display_kpis(combined if predict else grouped, freq)
 
         st.container(height=20, border=False)
 

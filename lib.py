@@ -357,11 +357,14 @@ def display_kpis(grouped, freq):
     min_date = grouped.loc[grouped['yhat'].idxmin(), 'ds']
     max_period = format_quarter(max_date) if freq[0] == 'quarter' else max_date.strftime(freq[4])
     min_period = format_quarter(min_date) if freq[0] == 'quarter' else min_date.strftime(freq[4])
-
-    with st.container():
+    columns = st.columns((1,3,3,3,3))
+    with columns[1]:
         st.metric('Total', int(grouped['yhat'].sum()))
+    with columns[2]:
         st.metric('Media', int(grouped['yhat'].mean()))
+    with columns[3]:
         st.metric('Periodo con más crímenes', max_period)
+    with columns[4]:
         st.metric('Periodo con menos crímenes', min_period)
 
 def apply_pond(df):

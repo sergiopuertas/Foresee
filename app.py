@@ -21,16 +21,21 @@ def main():
 
         if "authentication_status" not in st.session_state:
             st.session_state["authentication_status"] = None
-
+        st.markdown("<h1 style='font-size: 6em; text-align: center;'>Foresee</h1>", unsafe_allow_html=True)
         if not st.session_state.get("authentication_status"):
             handle_authentication(data_components)
         else:
-            user_role = st.session_state["user_info"]['role']
-            user_area = st.session_state["user_info"]['area']
+            user_email = st.session_state["mail"]
+            perms = data_components.get_user_permissions(user_email)
 
-            # Componentes principales
-            places = data_components.get_secure_unique_places(user_role, user_area)
-            predict, pond, chosen_crime, chosen_place = InteractionComponents.create_filters(places)
+            create_data = True if "Nuevos datos SI" in perms else False
+            create_users = True if "Nuevos usuarios SI" in perms else False
+            KPI = True if "KPI SI" in perms else False
+            Predict_perms = True if 'PREDICT SI' in perms else False
+            see_perms = [perm for perm in perms if "SEE" in perm][0]
+
+            places = data_components.get_secure_unique_places(user_email,see_perms)
+            predict, pond, chosen_crime, chosen_place = InteractionComponents.create_filters(places, Predict_perms)
 
             # Configuración de frecuencia
             freq_choice = st.radio("Predicción de crimen a futuro",
@@ -58,16 +63,18 @@ def main():
 
             # Mostrar gráficos y KPIs
             st.altair_chart(chart, use_container_width=True)
-            display_kpis(combined if predict else grouped, freq)
+            if KPI:
+                display_kpis(combined if predict else grouped, freq)
 
             st.container(height=20, border=False)
 
-            # Componentes de administración
-            InteractionComponents.create_data_input(user_role,
-                                                    lambda: data_components.get_secure_unique_places(user_role, user_area), conn)
-            if user_role == 'admin':
+            if create_data:
+                # Componentes de administración
+                InteractionComponents.create_data_input(
+                                                        lambda: data_components.get_secure_unique_places(user_email,"SEE_ALL"),conn)
+            if create_users:
                 InteractionComponents.user_create_form(data_components,
-                                                       lambda: data_components.get_secure_unique_places(user_role, user_area))
+                                                       lambda: data_components.get_secure_unique_places(user_email,"SEE_ALL"))
 
             # Botón de logout
             col = st.columns((4, 1, 4))

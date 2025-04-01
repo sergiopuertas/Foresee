@@ -9,6 +9,7 @@ from sqlalchemy import text
 import uuid
 import sqlalchemy as sa
 import toml
+from sqlalchemy.ext.serializer import our_ids
 
 # Mapas de categorías y configuraciones de frecuencia
 category_map = {
@@ -29,27 +30,61 @@ freqmap = {
     "Por semana": ["week", 1, 104, "W", "%d %b %Y", [True, True]],
     "Por trimestre": ["quarter", 1, 16, "QS", None, [True, False]]
 }
+ttl = 600
 
 class DataComponents:
     def __init__(self, connection):
         self.connection = connection
 
-    @st.cache_data(ttl=600)
-    def get_secure_unique_places(_self, user_role, user_area):
-        area_condition = "" if user_role == 'admin' else f" AND areaname = {user_area}"
+    @st.cache_data(ttl=ttl)
+    def get_user_permissions(_self, email):
+        """ Obtiene los permisos de un usuario en función de sus roles """
+        query = """
+            SELECT p.resource
+            FROM usuarios u
+            JOIN user_roles ur ON u.id = ur.user_id
+            JOIN roles r ON ur.role_id = r.id
+            JOIN role_permissions rp ON r.id = rp.role_id
+            JOIN permissions p ON rp.permission_id = p.id
+            WHERE u.email = :email
+            GROUP BY p.resource
+        """
+        result = _self.connection.execute(text(query), {'email': email})
+        rows = result.fetchall()
+        permissions = [row[0] for row in rows]
+        return permissions
 
-        query = f"SELECT DISTINCT areaname FROM main WHERE 1=1 {area_condition}"
+    @st.cache_data(ttl=ttl)
+    def get_user_area(_self, email):
+        """ Obtiene los permisos de un usuario en función de sus roles """
+        query = """
+                SELECT area FROM usuarios WHERE email = :email
+            """
+        result = _self.connection.execute(text(query), {'email': email})
+        rows = result.fetchall()
+        area = [row[0] for row in rows]
+        return area[0]
+
+    @st.cache_data(ttl=ttl)
+    def get_secure_unique_places(_self, email, see_permissions):
+        """ Obtiene las áreas disponibles según los permisos del usuario. """
+        if see_permissions == 'SEE_LOCAL':
+            area_conditions = f"areaname = '{_self.get_user_area(email)}'"
+        elif see_permissions == 'SEE_ALL':
+            area_conditions = "1=1"
+        else:
+            area_conditions = "1=0"
+
+        query = f"SELECT DISTINCT areaname FROM main WHERE {area_conditions}"
         result = _self.connection.execute(text(query))
         rows = result.fetchall()
         return [row[0] for row in rows]
 
-    @st.cache_data(ttl=600)
+    @st.cache_data(ttl=ttl)
     def secure_fetch_grouped_data(_self, crime_conditions, place_conditions, freq):
+        """ Obtiene datos agrupados según los permisos del usuario. """
         query = f"""
-            SELECT
-                DATE_TRUNC(:freq, date) AS period,
-                COUNT(*) AS count,
-                AVG(pond) AS pond
+            SELECT DATE_TRUNC(:freq, date) AS period, COUNT(*) AS count, AVG(pond) AS pond
             FROM main
             WHERE ({crime_conditions}) AND ({place_conditions})
             GROUP BY period
@@ -60,27 +95,21 @@ class DataComponents:
         columns = result.keys()
         return pd.DataFrame(rows, columns=columns) if rows else None
 
-    @st.cache_data(ttl=600)
-    def get_user(_self, email):
-        query = f"SELECT * FROM usuarios WHERE email = \'{email}\' "
-        result = _self.connection.execute(text(query))
-        rows = result.fetchall()
-        columns = result.keys()
-        return pd.DataFrame(rows, columns=columns) if rows else None
-
-    def create_user(self, email, full_name, role, area, password):
+    def create_user(self, email, full_name, area, password):
+        """ Crea un nuevo usuario con un ID único y sin roles asignados. """
         user_id = uuid.uuid5(uuid.NAMESPACE_DNS, email)
+        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
         query = """
-            INSERT INTO usuarios (id, email, full_name, role, area, password)
-            VALUES (:id, :email, :full_name, :role, :area, :password)
+            INSERT INTO usuarios (id, email, full_name,area, password)
+            VALUES (:id, :email, :full_name,:area, :password)
         """
         params = {
             'id': str(user_id),
             'email': email,
             'full_name': full_name,
-            'role': role,
             'area': area,
-            'password': password
+            'password': password_hash
         }
         try:
             self.connection.execute(text(query), params)
@@ -90,11 +119,21 @@ class DataComponents:
             st.error(f"Error al crear usuario: {str(e)}")
             return False
 
-    @st.cache_data(ttl=600)
+    @st.cache_data(ttl=ttl)
+    def get_user(_self, email):
+        """ Obtiene la información de un usuario por email. """
+        query = "SELECT * FROM usuarios WHERE email = :email"
+        result = _self.connection.execute(text(query), {'email': email})
+        rows = result.fetchall()
+        columns = result.keys()
+        return pd.DataFrame(rows, columns=columns) if rows else None
+
+    @st.cache_data(ttl=ttl)
     def verify_login(_self, email, plain_password):
-        query = f"SELECT password FROM usuarios WHERE email = \'{email}\' "
+        """ Verifica la contraseña de un usuario. """
+        query = "SELECT password FROM usuarios WHERE email = :email"
         try:
-            result = _self.connection.execute(text(query))
+            result = _self.connection.execute(text(query), {'email': email})
             row = result.fetchone()
             if row is None:
                 return False
@@ -108,12 +147,17 @@ class DataComponents:
 
 class InteractionComponents:
     @staticmethod
-    def create_filters(places):
+    def create_filters(places, predict_perms):
         col1, col2, _, col3 = st.columns((2, 1, 3, 1))
-        with col1:
-            predict = st.checkbox("Predicción de crimen a futuro", value=False)
-        with col2:
-            pond = st.checkbox("Ponderar crímenes", value=False)
+        if predict_perms:
+            with col1:
+                predict = st.checkbox("Predicción de crimen a futuro", value=False)
+            with col2:
+                pond = st.checkbox("Ponderar crímenes", value=False)
+        else:
+            predict = False
+            with col1:
+                pond = st.checkbox("Ponderar crímenes", value=False)
         with col3:
             with st.popover("Segmentación"):
                 chosen_crime = st.multiselect('Segmentado por crimen',
@@ -125,8 +169,7 @@ class InteractionComponents:
         return predict, pond, chosen_crime, chosen_place
 
     @staticmethod
-    def create_data_input(user_role, get_places_func, conn):
-        if user_role == 'admin':
+    def create_data_input(get_places_func, conn):
             with st.expander("📝 Ingreso de Datos", expanded=False):
                 if "new_data" not in st.session_state:
                     st.session_state.new_data = pd.DataFrame()
@@ -151,7 +194,7 @@ class InteractionComponents:
 
                 with col_input2:
                     st.header("Cargar archivo CSV")
-                    uploaded_data = st.file_uploader("Archivo .csv", type=["csv"], label_visibility="collapsed", on_change=st.cache_data.clear)
+                    uploaded_data = st.file_uploader("Archivo .csv", type=["csv"], label_visibility="collapsed", on_change= DataComponents.secure_fetch_grouped_data.clear)
                     if uploaded_data is not None:
                         uploaded_df = pd.read_csv(uploaded_data)
                         st.session_state.new_data = pd.concat([
@@ -177,6 +220,7 @@ class InteractionComponents:
                                     if_exists='append',
                                     index=False
                             )
+                            conn.commit()
                             st.session_state.new_data = pd.DataFrame()
                             st.rerun()
                         except Exception as e:
@@ -193,7 +237,7 @@ class InteractionComponents:
                 with col1:
                     new_name = st.text_input("Nombre completo*")
                     new_email = st.text_input("Email*")
-                    new_role = st.selectbox("Rol*", ["admin", "user"])
+                    new_role = st.selectbox("Rol*", ["ADMIN" , "ADMIN_REG" , "READER" , "IT" , "USER_REG"])
                 with col2:
                     new_password = st.text_input("Contraseña*", type="password")
                     confirm_password = st.text_input("Confirmar contraseña*", type="password")
@@ -216,8 +260,7 @@ class InteractionComponents:
                             data_components.create_user(
                                 new_email,
                                 new_name,
-                                new_role,
-                                new_area if new_role == "user" else None,
+                                new_area,
                                 hashed_password,
                             )
 
@@ -236,26 +279,29 @@ def handle_authentication(data_components):
         login_container = st.container()
 
         with login_container:
-            st.title("Bienvenido a Foresee")
-            st.subheader("Por favor, inicie sesión")
+            st.markdown("<h1 style='font-size: 2em; text-align: center;'>Por favor, inicie sesión</h1>", unsafe_allow_html=True)
             st.container(height=40, border=False)
             mail = st.text_input("Email")
-            password = st.text_input("Password", type="password")
-            login_button = st.button("Login")
+            password = st.text_input("Contraseña", type="password")
+            col1,_,col2 = st.columns((1,4,1))
+            with col1:
+                login_button = st.button("Iniciar Sesión")
+            with col2:
+                outsider = st.button("Ingresar como invitado")
     if login_button:
         user = data_components.get_user(mail)
         if user is not None and data_components.verify_login(mail, password):
             st.session_state["authentication_status"] = True
             st.session_state["mail"] = mail
-            st.session_state["user_info"] = {
-                'role': user['role'].iloc[0],
-                'area': user['area'].iloc[0]
-            }
             login_container.empty()
             st.rerun()
         else:
             st.error("Credenciales inválidas")
-
+    if outsider:
+        st.session_state["authentication_status"] = True
+        st.session_state["mail"] = 'outsider@gmail.com'
+        login_container.empty()
+        st.rerun()
 # --------------- FUNCIONES AUXILIARES -----------------#
 
 def format_quarter(date):

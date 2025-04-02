@@ -9,8 +9,6 @@ from sqlalchemy import text
 import uuid
 import sqlalchemy as sa
 import toml
-from sqlalchemy.ext.serializer import our_ids
-
 # Mapas de categorías y configuraciones de frecuencia
 category_map = {
     'STOLEN VEHICLE': 'VEHICLE - STOLEN',
@@ -30,13 +28,12 @@ freqmap = {
     "Por semana": ["week", 1, 104, "W", "%d %b %Y", [True, True]],
     "Por trimestre": ["quarter", 1, 16, "QS", None, [True, False]]
 }
-ttl = 600
 
 class DataComponents:
     def __init__(self, connection):
         self.connection = connection
 
-    @st.cache_data(ttl=ttl)
+    @st.cache_data(ttl=600)
     def get_user_permissions(_self, email):
         """ Obtiene los permisos de un usuario en función de sus roles """
         query = """
@@ -54,7 +51,7 @@ class DataComponents:
         permissions = [row[0] for row in rows]
         return permissions
 
-    @st.cache_data(ttl=ttl)
+    @st.cache_data(ttl=600)
     def get_user_area(_self, email):
         """ Obtiene los permisos de un usuario en función de sus roles """
         query = """
@@ -65,7 +62,7 @@ class DataComponents:
         area = [row[0] for row in rows]
         return area[0]
 
-    @st.cache_data(ttl=ttl)
+    @st.cache_data(ttl=600)
     def get_secure_unique_places(_self, email, see_permissions):
         """ Obtiene las áreas disponibles según los permisos del usuario. """
         if see_permissions == 'SEE_LOCAL':
@@ -80,7 +77,7 @@ class DataComponents:
         rows = result.fetchall()
         return [row[0] for row in rows]
 
-    @st.cache_data(ttl=ttl)
+    @st.cache_data(ttl=600)
     def secure_fetch_grouped_data(_self, crime_conditions, place_conditions, freq):
         """ Obtiene datos agrupados según los permisos del usuario. """
         query = f"""
@@ -90,6 +87,7 @@ class DataComponents:
             GROUP BY period
             ORDER BY period
         """
+        print("query")
         result = _self.connection.execute(text(query), {'freq': freq[0]})
         rows = result.fetchall()
         columns = result.keys()
@@ -119,7 +117,7 @@ class DataComponents:
             st.error(f"Error al crear usuario: {str(e)}")
             return False
 
-    @st.cache_data(ttl=ttl)
+    @st.cache_data(ttl=600)
     def get_user(_self, email):
         """ Obtiene la información de un usuario por email. """
         query = "SELECT * FROM usuarios WHERE email = :email"
@@ -128,7 +126,7 @@ class DataComponents:
         columns = result.keys()
         return pd.DataFrame(rows, columns=columns) if rows else None
 
-    @st.cache_data(ttl=ttl)
+    @st.cache_data(ttl=600)
     def verify_login(_self, email, plain_password):
         """ Verifica la contraseña de un usuario. """
         query = "SELECT password FROM usuarios WHERE email = :email"
@@ -194,7 +192,7 @@ class InteractionComponents:
 
                 with col_input2:
                     st.header("Cargar archivo CSV")
-                    uploaded_data = st.file_uploader("Archivo .csv", type=["csv"], label_visibility="collapsed", on_change= DataComponents.secure_fetch_grouped_data.clear)
+                    uploaded_data = st.file_uploader("Archivo .csv", type=["csv"], label_visibility="collapsed")
                     if uploaded_data is not None:
                         uploaded_df = pd.read_csv(uploaded_data)
                         st.session_state.new_data = pd.concat([
@@ -268,11 +266,23 @@ class InteractionComponents:
                         except Exception as e:
                             st.error(f"❌ Error al registrar: {str(e)}")
 
+def login_callback(data_components,mail,password):
+    user = data_components.get_user(mail)
+    if user is not None and data_components.verify_login(mail, password):
+        st.session_state["authentication_status"] = True
+        st.session_state["mail"] = mail
+    else:
+        st.error("Credenciales inválidas")
+
+def outsider_callback():
+    st.session_state["authentication_status"] = True
+    st.session_state["mail"] = "outsider@gmail.com"
+
 
 def handle_authentication(data_components):
     if "authentication_status" not in st.session_state:
         st.session_state["authentication_status"] = None
-        st.session_state["username"] = None
+        st.session_state["mail"] = None
 
     empty = st.empty()
     with empty:
@@ -285,23 +295,10 @@ def handle_authentication(data_components):
             password = st.text_input("Contraseña", type="password")
             col1,_,col2 = st.columns((1,4,1))
             with col1:
-                login_button = st.button("Iniciar Sesión")
+                st.button("Iniciar Sesión",on_click=login_callback, args=(data_components,mail, password))
             with col2:
-                outsider = st.button("Ingresar como invitado")
-    if login_button:
-        user = data_components.get_user(mail)
-        if user is not None and data_components.verify_login(mail, password):
-            st.session_state["authentication_status"] = True
-            st.session_state["mail"] = mail
-            login_container.empty()
-            st.rerun()
-        else:
-            st.error("Credenciales inválidas")
-    if outsider:
-        st.session_state["authentication_status"] = True
-        st.session_state["mail"] = 'outsider@gmail.com'
-        login_container.empty()
-        st.rerun()
+                st.button("Ingresar como invitado",on_click=outsider_callback)
+
 # --------------- FUNCIONES AUXILIARES -----------------#
 
 def format_quarter(date):

@@ -1,4 +1,3 @@
-import bcrypt
 import datetime
 import time
 import streamlit as st
@@ -9,6 +8,12 @@ from sqlalchemy import text
 import uuid
 import sqlalchemy as sa
 import toml
+from argon2 import PasswordHasher
+import hmac
+import os
+
+ph = PasswordHasher()
+
 # Mapas de categorías y configuraciones de frecuencia
 category_map = {
     'STOLEN VEHICLE': 'VEHICLE - STOLEN',
@@ -87,16 +92,15 @@ class DataComponents:
             GROUP BY period
             ORDER BY period
         """
-        print("query")
         result = _self.connection.execute(text(query), {'freq': freq[0]})
         rows = result.fetchall()
         columns = result.keys()
         return pd.DataFrame(rows, columns=columns) if rows else None
 
-    def create_user(self, email, full_name, area, password):
+    def create_user(self, email, full_name, area, password, role):
         """ Crea un nuevo usuario con un ID único y sin roles asignados. """
         user_id = uuid.uuid5(uuid.NAMESPACE_DNS, email)
-        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        password_hash = ph.hash(password)
 
         query = """
             INSERT INTO usuarios (id, email, full_name,area, password)
@@ -112,12 +116,36 @@ class DataComponents:
         try:
             self.connection.execute(text(query), params)
             self.connection.commit()
-            return True
         except Exception as e:
             st.error(f"Error al crear usuario: {str(e)}")
             return False
 
-    @st.cache_data(ttl=600)
+        query = """
+            SELECT id FROM roles WHERE name = :role
+        """
+        try:
+            role_result = self.connection.execute(text(query), {'role': role})
+            role_id = role_result.fetchone()[0]
+        except Exception as e:
+            st.error(f"Error al obtener el ID del rol: {str(e)}")
+            return False
+
+        query = """
+            INSERT INTO user_roles (user_id, role_id)
+            VALUES (:user_id, :role_id)
+        """
+        params = {
+            'user_id': str(user_id),
+            'role_id': role_id
+        }
+        try:
+            self.connection.execute(text(query), params)
+            self.connection.commit()
+            return True
+        except Exception as e:
+            st.error(f"Error al asignar usuario a rol: {str(e)}")
+            return False
+
     def get_user(_self, email):
         """ Obtiene la información de un usuario por email. """
         query = "SELECT * FROM usuarios WHERE email = :email"
@@ -130,17 +158,16 @@ class DataComponents:
     def verify_login(_self, email, plain_password):
         """ Verifica la contraseña de un usuario. """
         query = "SELECT password FROM usuarios WHERE email = :email"
-        try:
-            result = _self.connection.execute(text(query), {'email': email})
-            row = result.fetchone()
-            if row is None:
+
+        result = _self.connection.execute(text(query), {'email': email})
+        row = result.fetchone()
+        if row is None:
+                print("Usuario no encontrado")
                 return False
 
-            stored_hash = row[0].encode('utf-8')
-            return bcrypt.checkpw(plain_password.encode('utf-8'), stored_hash)
-        except Exception as e:
-            st.error(f"Error en verificación: {str(e)}")
-            return False
+        stored_hash = row[0]
+        return ph.verify(stored_hash, plain_password,)
+
 
 
 class InteractionComponents:
@@ -168,41 +195,45 @@ class InteractionComponents:
 
     @staticmethod
     def create_data_input(get_places_func, conn):
-            with st.expander("📝 Ingreso de Datos", expanded=False):
-                if "new_data" not in st.session_state:
-                    st.session_state.new_data = pd.DataFrame()
+        # Inicializar el estado del expander si no existe
+        if "data_input_expanded" not in st.session_state:
+            st.session_state["data_input_expanded"] = False
 
-                col_input1, _, col_input2 = st.columns((2, 1, 2))
-                with col_input1:
-                    st.header("Inserte un nuevo crimen")
-                    date = st.date_input("Fecha del crimen", value=datetime.date.today())
-                    place = st.selectbox("Lugar del crimen", sorted(get_places_func()))
-                    crime = st.selectbox("Tipo de crimen", sorted(category_map.keys()))
-                    if st.button("Agregar"):
-                        new_entry = {
-                            'date': date,
-                            'crimecodedesc': category_map[crime],
-                            'areaname': place
-                        }
-                        st.session_state.new_data = pd.concat([
-                            st.session_state.new_data,
-                            pd.DataFrame([new_entry])
-                        ], ignore_index=True)
-                        st.session_state.new_data = apply_pond(st.session_state.new_data)
+        # Usar la variable de estado para controlar si el expander está abierto
+        with st.expander("📝 Ingreso de Datos", expanded=st.session_state["data_input_expanded"]):
+            col_input1, _, col_input2 = st.columns((2, 1, 2))
+            with col_input1:
+                st.header("Inserte un nuevo crimen")
+                date = st.date_input("Fecha del crimen", value=datetime.date.today())
+                place = st.selectbox("Lugar del crimen", sorted(get_places_func()))
+                crime = st.selectbox("Tipo de crimen", sorted(category_map.keys()))
+                if st.button("Agregar", on_click=leave_open):
+                    new_entry = {
+                        'date': date,
+                        'crimecodedesc': category_map[crime],
+                        'areaname': place
+                    }
+                    st.session_state.new_data = pd.concat([
+                        st.session_state.new_data,
+                        pd.DataFrame([new_entry])
+                    ], ignore_index=True)
+                    st.session_state.new_data = apply_pond(st.session_state.new_data)
+                    st.session_state["data_input_expanded"] = True
 
-                with col_input2:
-                    st.header("Cargar archivo CSV")
-                    uploaded_data = st.file_uploader("Archivo .csv", type=["csv"], label_visibility="collapsed")
-                    if uploaded_data is not None:
-                        uploaded_df = pd.read_csv(uploaded_data)
-                        st.session_state.new_data = pd.concat([
-                            st.session_state.new_data,
-                            uploaded_df[['date', 'crimecodedesc', 'areaname']]
-                        ], ignore_index=True)
-                        st.session_state.new_data = apply_pond(st.session_state.new_data)
+            with col_input2:
+                st.header("Cargar archivo CSV")
+                uploaded_data = st.file_uploader("Archivo .csv", type=["csv"], label_visibility="collapsed")
+                if uploaded_data is not None:
+                    uploaded_df = pd.read_csv(uploaded_data)
+                    st.session_state.new_data = pd.concat([
+                        st.session_state.new_data,
+                        uploaded_df[['date', 'crimecodedesc', 'areaname']]
+                    ], ignore_index=True)
+                    st.session_state.new_data = apply_pond(st.session_state.new_data)
+                    st.session_state["data_input_expanded"] = True
 
-                st.dataframe(st.session_state.new_data, height=200)
-                InteractionComponents.save_delete_data(conn)
+            st.dataframe(st.session_state.new_data, height=200)
+            InteractionComponents.save_delete_data(conn)
 
     @staticmethod
     def save_delete_data(conn):
@@ -226,6 +257,7 @@ class InteractionComponents:
         with col_btn2:
             if st.button("Borrar datos"):
                 st.session_state.new_data = pd.DataFrame()
+                st.rerun()
 
     @staticmethod
     def user_create_form(data_components, get_places_func):
@@ -254,17 +286,20 @@ class InteractionComponents:
                         st.error("❌ Las contraseñas deben coincidir")
                     else:
                         try:
-                            hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt(12)).decode('utf-8')
                             data_components.create_user(
                                 new_email,
                                 new_name,
                                 new_area,
-                                hashed_password,
+                                new_password,
+                                new_role
                             )
-
                             st.success("✅ Usuario registrado exitosamente")
+                            time.sleep(2)
                         except Exception as e:
                             st.error(f"❌ Error al registrar: {str(e)}")
+
+def leave_open():
+    st.session_state["data_input_expanded"] = True
 
 def login_callback(data_components,mail,password):
     user = data_components.get_user(mail)

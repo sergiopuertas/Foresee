@@ -1,18 +1,6 @@
 # app.py
 from lib import *
 
-
-@st.cache_resource
-def get_engine():
-    DB = toml.load(".streamlit/secrets.toml")["DB"]["url"]
-    return sa.engine.create_engine(DB)
-
-def get_connection():
-    if "connection" not in st.session_state or st.session_state.connection.closed:
-        print("nueva conexión")
-        st.session_state.connection = get_engine().connect()
-    return st.session_state.connection
-
 st.set_page_config(layout="wide")
 st.markdown("""
         <style>
@@ -23,6 +11,16 @@ st.markdown("""
             }
         </style>
 """, unsafe_allow_html=True)
+@st.cache_resource
+def get_engine():
+    DB = toml.load(".streamlit/secrets.toml")["DB"]["url"]
+    return sa.engine.create_engine(DB)
+
+def get_connection():
+    if "connection" not in st.session_state or st.session_state.connection.closed:
+        print("nueva conexión")
+        st.session_state.connection = get_engine().connect()
+    return st.session_state.connection
 
 def main():
     conn = get_connection()
@@ -80,6 +78,8 @@ def main():
         st.container(height=20, border=False)
 
         if create_data:
+            if "new_data" not in st.session_state:
+                st.session_state["new_data"] = pd.DataFrame()
             # Componentes de administración
             InteractionComponents.create_data_input(
                 lambda: data_components.get_secure_unique_places(user_email, "SEE_ALL"), conn)

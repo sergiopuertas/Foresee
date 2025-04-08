@@ -11,20 +11,15 @@ st.markdown("""
             }
         </style>
 """, unsafe_allow_html=True)
+
 @st.cache_resource
 def get_engine():
     DB = toml.load(".streamlit/secrets.toml")["DB"]["url"]
-    return sa.engine.create_engine(DB)
-
-def get_connection():
-    if "connection" not in st.session_state or st.session_state.connection.closed:
-        print("nueva conexión")
-        st.session_state.connection = get_engine().connect()
-    return st.session_state.connection
+    return sa.engine.create_engine(DB,pool_pre_ping=True)
 
 def main():
-    conn = get_connection()
-    data_components = DataComponents(conn)
+    engine = get_engine()
+    data_components = DataComponents(engine)
 
     if "authentication_status" not in st.session_state:
             st.session_state["authentication_status"] = None
@@ -82,7 +77,7 @@ def main():
                 st.session_state["new_data"] = pd.DataFrame()
             # Componentes de administración
             InteractionComponents.create_data_input(
-                lambda: data_components.get_secure_unique_places(user_email, "SEE_ALL"), conn)
+                lambda: data_components.get_secure_unique_places(user_email, "SEE_ALL"), data_components.engine)
         if create_users:
             InteractionComponents.user_create_form(data_components,
                                                    lambda: data_components.get_secure_unique_places(user_email, "SEE_ALL"))
@@ -90,7 +85,7 @@ def main():
         # Botón de logout
         _,col,_ = st.columns((4, 1, 4))
         with col:
-            if st.button("Cerrar sesión"):
+            if st.button("Cerrar sesión", on_click= data_components.secure_fetch_grouped_data.clear):
                 st.session_state["authentication_status"] = None
                 st.rerun()
 

@@ -35,8 +35,8 @@ freqmap = {
 }
 
 class DataComponents:
-    def __init__(self, connection):
-        self.connection = connection
+    def __init__(self, engine):
+        self.engine = engine
 
     @st.cache_data(ttl=600)
     def get_user_permissions(_self, email):
@@ -51,7 +51,9 @@ class DataComponents:
             WHERE u.email = :email
             GROUP BY p.resource
         """
-        result = _self.connection.execute(text(query), {'email': email})
+        with _self.engine.connect() as conn:
+            result = conn.execute(text(query), {'email': email})
+
         rows = result.fetchall()
         permissions = [row[0] for row in rows]
         return permissions
@@ -62,7 +64,8 @@ class DataComponents:
         query = """
                 SELECT area FROM usuarios WHERE email = :email
             """
-        result = _self.connection.execute(text(query), {'email': email})
+        with _self.engine.connect() as conn:
+            result = conn.execute(text(query), {'email': email})
         rows = result.fetchall()
         area = [row[0] for row in rows]
         return area[0]
@@ -78,7 +81,8 @@ class DataComponents:
             area_conditions = "1=0"
 
         query = f"SELECT DISTINCT areaname FROM main WHERE {area_conditions}"
-        result = _self.connection.execute(text(query))
+        with _self.engine.connect() as conn:
+            result = conn.execute(text(query))
         rows = result.fetchall()
         return [row[0] for row in rows]
 
@@ -92,7 +96,8 @@ class DataComponents:
             GROUP BY period
             ORDER BY period
         """
-        result = _self.connection.execute(text(query), {'freq': freq[0]})
+        with _self.engine.connect() as conn:
+            result = conn.execute(text(query), {'freq': freq[0]})
         rows = result.fetchall()
         columns = result.keys()
         return pd.DataFrame(rows, columns=columns) if rows else None
@@ -114,8 +119,9 @@ class DataComponents:
             'password': password_hash
         }
         try:
-            self.connection.execute(text(query), params)
-            self.connection.commit()
+            with self.engine.connect() as conn:
+                conn.execute(text(query), params)
+                conn.commit()
         except Exception as e:
             st.error(f"Error al crear usuario: {str(e)}")
             return False
@@ -124,7 +130,8 @@ class DataComponents:
             SELECT id FROM roles WHERE name = :role
         """
         try:
-            role_result = self.connection.execute(text(query), {'role': role})
+            with self.engine.connect() as conn:
+                role_result = conn.execute(text(query), {'role': role})
             role_id = role_result.fetchone()[0]
         except Exception as e:
             st.error(f"Error al obtener el ID del rol: {str(e)}")
@@ -139,8 +146,9 @@ class DataComponents:
             'role_id': role_id
         }
         try:
-            self.connection.execute(text(query), params)
-            self.connection.commit()
+            with self.engine.connect() as conn:
+                conn.execute(text(query), params)
+                conn.commit()
             return True
         except Exception as e:
             st.error(f"Error al asignar usuario a rol: {str(e)}")
@@ -149,7 +157,8 @@ class DataComponents:
     def get_user(_self, email):
         """ Obtiene la información de un usuario por email. """
         query = "SELECT * FROM usuarios WHERE email = :email"
-        result = _self.connection.execute(text(query), {'email': email})
+        with _self.engine.connect() as conn:
+            result = conn.execute(text(query), {'email': email})
         rows = result.fetchall()
         columns = result.keys()
         return pd.DataFrame(rows, columns=columns) if rows else None
@@ -158,8 +167,8 @@ class DataComponents:
     def verify_login(_self, email, plain_password):
         """ Verifica la contraseña de un usuario. """
         query = "SELECT password FROM usuarios WHERE email = :email"
-
-        result = _self.connection.execute(text(query), {'email': email})
+        with _self.engine.connect() as conn:
+            result = conn.execute(text(query), {'email': email})
         row = result.fetchone()
         if row is None:
                 print("Usuario no encontrado")
@@ -194,7 +203,7 @@ class InteractionComponents:
         return predict, pond, chosen_crime, chosen_place
 
     @staticmethod
-    def create_data_input(get_places_func, conn):
+    def create_data_input(get_places_func, engine):
         # Inicializar el estado del expander si no existe
         if "data_input_expanded" not in st.session_state:
             st.session_state["data_input_expanded"] = False
@@ -233,23 +242,25 @@ class InteractionComponents:
                     st.session_state["data_input_expanded"] = True
 
             st.dataframe(st.session_state.new_data, height=200)
-            InteractionComponents.save_delete_data(conn)
+            InteractionComponents.save_delete_data(engine)
 
     @staticmethod
-    def save_delete_data(conn):
+    def save_delete_data(engine):
         col_btn1, col_btn2, _ = st.columns((1, 1, 6))
         with col_btn1:
             if st.button("Guardar datos",on_click=st.cache_data.clear):
                 if not st.session_state.new_data.empty:
                     with st.spinner("Guardando datos..."):
                         try:
-                            st.session_state.new_data.to_sql(
+                            with engine.connect() as conn:
+                                # Crear la tabla si no existe
+                                st.session_state.new_data.to_sql(
                                     'main',
                                     conn,
-                                    if_exists='append',
+                                    if_exists='replace',
                                     index=False
-                            )
-                            conn.commit()
+                                )
+                                conn.commit()
                             st.session_state.new_data = pd.DataFrame()
                             st.rerun()
                         except Exception as e:

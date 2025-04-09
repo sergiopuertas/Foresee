@@ -9,10 +9,14 @@ import uuid
 import sqlalchemy as sa
 import toml
 from argon2 import PasswordHasher
-import hmac
-import os
+from datetime import datetime
 
 ph = PasswordHasher()
+
+@st.cache_resource
+def get_engine():
+    DB = toml.load(".streamlit/secrets.toml")["DB"]["url"]
+    return sa.engine.create_engine(DB,pool_pre_ping=True)
 
 # Mapas de categorías y configuraciones de frecuencia
 category_map = {

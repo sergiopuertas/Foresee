@@ -6,6 +6,14 @@ from sqlalchemy import Engine
 from lib import *
 import uuid
 from datetime import datetime
+import dotenv
+
+def get_engine():
+    dotenv.load_dotenv()
+    DB = dotenv.get_key(".env", "DB")
+    return sa.engine.create_engine(DB,pool_pre_ping=True)
+
+
 # ---------------------------
 # Modelos Pydantic para request/response
 # ---------------------------

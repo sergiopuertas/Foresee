@@ -13,11 +13,6 @@ from datetime import datetime
 
 ph = PasswordHasher()
 
-@st.cache_resource
-def get_engine():
-    DB = toml.load(".streamlit/secrets.toml")["DB"]["url"]
-    return sa.engine.create_engine(DB,pool_pre_ping=True)
-
 # Mapas de categorías y configuraciones de frecuencia
 category_map = {
     'STOLEN VEHICLE': 'VEHICLE - STOLEN',

@@ -12,6 +12,12 @@ st.markdown("""
         </style>
 """, unsafe_allow_html=True)
 
+@st.cache_resource
+def get_engine():
+    DB = toml.load(".streamlit/secrets.toml")["DB"]["url"]
+    return sa.engine.create_engine(DB,pool_pre_ping=True)
+
+
 def main():
     engine = get_engine()
     data_components = DataComponents(engine)

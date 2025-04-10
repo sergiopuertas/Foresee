@@ -8,4 +8,6 @@ streamlit==1.43.0
 toml==0.10.2
 datetime
 uuid
-time
+watchdog
+psycopg2-binary
+plotly

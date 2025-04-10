@@ -1,4 +1,6 @@
-.streamlit/
+app/.streamlit/
 .idea/
 data/
 generate_keys.py
+
+api/.env

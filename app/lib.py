@@ -1,4 +1,3 @@
-import datetime
 import time
 import streamlit as st
 import altair as alt
@@ -212,7 +211,7 @@ class InteractionComponents:
             col_input1, _, col_input2 = st.columns((2, 1, 2))
             with col_input1:
                 st.header("Inserte un nuevo crimen")
-                date = st.date_input("Fecha del crimen", value=datetime.date.today())
+                date = st.date_input("Fecha del crimen", value=datetime.today())
                 place = st.selectbox("Lugar del crimen", sorted(get_places_func()))
                 crime = st.selectbox("Tipo de crimen", sorted(category_map.keys()))
                 if st.button("Agregar", on_click=leave_open):

@@ -11,12 +11,18 @@ from pydantic import BaseModel, EmailStr
 import uuid
 from datetime import datetime
 import dotenv
+import os
 
 
 def get_engine():
-    dotenv.load_dotenv()
-    DB = dotenv.get_key(".env", "DB")
-    return sa.engine.create_engine(DB,pool_pre_ping=True)
+    # Si no está definida la variable, cargamos el archivo .env, útil solo en desarrollo
+    if not os.getenv("DB"):
+        dotenv.load_dotenv()  # Esto busca un archivo .env en la raíz
+    db_url = os.getenv("DB")
+    if not db_url:
+        raise RuntimeError("La variable de entorno DB no está definida.")
+    return sa.engine.create_engine(db_url, pool_pre_ping=True)
+
 
 ph = PasswordHasher()
 

@@ -32,6 +32,11 @@ class GroupedDataRequest(BaseModel):
     end_time : Optional[datetime] = None
 
 
+class PredictRequest(BaseModel):
+    chosen_crime: Optional[List[str]] = None
+    chosen_place: Optional[List[str]] = None
+    frequency: Optional[str] = ""
+    n_steps: Optional[int] = 6
 
 # ---------------------------
 # FastAPI: Endpoints y Autenticación
@@ -198,7 +203,7 @@ def get_grouped_data(request: GroupedDataRequest,
         raise HTTPException(status_code=403, detail="No autorizado para acceder a este lugar")
 
     crime_cond, place_cond = build_conditions(crimes, request.chosen_place)
-    freq  = freqmap[request.group] if request.group in freqmap.keys() else request.group
+    freq  = freqmap[request.group][0] if request.group in freqmap.keys() else request.group
     df = data_components.secure_fetch_grouped_data(
         crime_cond, place_cond,
         freq,
@@ -208,10 +213,7 @@ def get_grouped_data(request: GroupedDataRequest,
     if df is None:
         return []
 
-    # Si hay fecha, filtramos por periodo solo si es un dataframe con period
-    if "period" in df.columns and request.init_time and request.end_time:
-        df['period'] = pd.to_datetime(df['period']).dt.date
-        df = df[(df['period'] >= request.init_time.date()) & (df['period'] <= request.end_time.date())]
+    df['period'] = pd.to_datetime(df['period']).dt.date
 
     return df.to_dict(orient="records")
 
@@ -238,13 +240,15 @@ def get_grouped_data(request: GroupedDataRequest,
 }
 """
 @app.post("/predict")
-def predict_data(chosen_crime: Optional[List[str]] = None,
-                 chosen_place: Optional[List[str]] = None,
-                 frequency: str = "Por mes",
-                 n_steps: int = 6,
-                 ponder: bool = False,
+def predict_data(request: PredictRequest,
                  user: User = Depends(get_current_user),
                  eng: Engine = Depends(get_engine)):
+
+    chosen_crime = request.chosen_crime
+    chosen_place = request.chosen_place
+    frequency = request.frequency
+    n_steps = request.n_steps
+
     data_components = DataComponents(eng)
     perms = data_components.get_user_permissions(user.email[0] if isinstance(user.email, pd.Series) else user.email)
     if "PREDICT SI" not in perms:
@@ -253,16 +257,17 @@ def predict_data(chosen_crime: Optional[List[str]] = None,
     crimes = chosen_crime[0].replace("'", "").split(",") if chosen_crime else None
     crime_cond, place_cond = build_conditions(crimes, chosen_place)
 
-    df = data_components.secure_fetch_grouped_data(crime_cond, place_cond, freqmap[frequency])
+    df = data_components.secure_fetch_grouped_data(crime_cond, place_cond, freqmap[frequency][0])
+
     df['period'] = pd.to_datetime(df['period']).dt.date
-    df = apply_ponderation_to_data(df, ponder)
     forecast = forecast_data(df, freqmap[frequency], n_steps)
-    forecast.drop(forecast[forecast['tipo']=="Histórico"], axis=1)
+
+    forecast = forecast[forecast['tipo']=="Predicción"]
     forecast['ds'] = pd.to_datetime(forecast['ds']).dt.date
     forecast['yhat'] = forecast['yhat'].round(0).astype(int)
     forecast['yhat_lower'] = forecast['yhat_lower'].round(0).astype(int)
     forecast['yhat_upper'] = forecast['yhat_upper'].round(0).astype(int)
-    return forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].to_dict(orient='records')
+    return forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper','tipo']].to_dict(orient='records')
 
 # Endpoint para ingresar nuevos datos (requiere rol "Nuevos datos SI")
 """

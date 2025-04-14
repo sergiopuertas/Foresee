@@ -41,10 +41,10 @@ category_map = {
 }
 
 freqmap = {
-    "Por mes": "month",
-    "Por semana": "week",
-    "Por trimestre": "quarter",
-    "Por dia": "day",
+    "Por mes": ["month", 1, 24, "MS", "%b %Y", [True, False]],
+    "Por semana": ["week", 1, 104, "W", "%d %b %Y", [True, True]],
+    "Por trimestre": ["quarter", 1, 16, "QS", None, [True, False]],
+    "Por día":["day", 1, 365, "D", "%d %b %Y", [True, True]],
 }
 
 class DataComponents:
@@ -103,13 +103,12 @@ class DataComponents:
             query_min_max = "SELECT MIN(date) AS min_date, MAX(date) AS max_date FROM main"
             with _self.engine.connect() as conn:
                 result = conn.execute(text(query_min_max)).fetchone()
-            print(result)
             init_time = init_time or result[0]
             end_time = end_time or result[1]
 
         date_filter = f"AND date BETWEEN '{init_time}' AND '{end_time}'"
-
-        if freq in freqmap.values():
+        print(freq)
+        if freq in['month', 'week', 'quarter', 'day']:
             query = f"""
                 SELECT DATE_TRUNC('{freq}', date) AS period, COUNT(*) AS count
                 FROM main
@@ -117,19 +116,20 @@ class DataComponents:
                 GROUP BY period
                 ORDER BY period
             """
-        elif freq == "Custom":
+        elif freq == "Custom" and init_time is not None and end_time is not None:
             query = f"""
                 SELECT COUNT(*) AS count
                 FROM main
                 WHERE ({crime_conditions}) AND ({place_conditions}) {date_filter}
             """
-        else:
+        elif freq is None and init_time is not None and end_time is not None:
             query = f"""
-                SELECT date, crimecodedesc, areaname
+                SELECT date AS period, crimecodedesc, areaname
                 FROM main
                 WHERE ({crime_conditions}) AND ({place_conditions}) {date_filter}
                 ORDER BY date"""
-
+        else:
+            raise HTTPException(status_code=400, detail="Frecuencia no válida o no soportada")
 
         with _self.engine.connect() as conn:
             result = conn.execute(text(query))
@@ -189,6 +189,8 @@ class DataComponents:
         rows = result.fetchall()
         columns = result.keys()
         return pd.DataFrame(rows, columns=columns) if rows else None
+
+
     def verify_login(_self, email, plain_password):
         """ Verifica la contraseña de un usuario. """
         query = "SELECT password FROM usuarios WHERE email = :email"

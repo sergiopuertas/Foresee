@@ -190,7 +190,9 @@ def get_grouped_data(request: GroupedDataRequest,
 
     crimes = request.chosen_crime[0].replace("'", "").split(",") if request.chosen_crime else None
     email = user.email[0] if isinstance(user.email, pd.Series) else user.email
-    places = data_components.get_secure_unique_places(email, "SEE_LOCAL")
+    perms = data_components.get_user_permissions(email)
+    see_perms = [perm for perm in perms if "SEE" in perm][0]
+    places = data_components.get_secure_unique_places(email, see_perms)
 
     if request.chosen_place and any(place not in places for place in request.chosen_place):
         raise HTTPException(status_code=403, detail="No autorizado para acceder a este lugar")

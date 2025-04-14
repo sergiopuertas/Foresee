@@ -41,9 +41,10 @@ category_map = {
 }
 
 freqmap = {
-    "Por mes": ["month", 1, 24, "MS", "%b %Y", [True, False]],
-    "Por semana": ["week", 1, 104, "W", "%d %b %Y", [True, True]],
-    "Por trimestre": ["quarter", 1, 16, "QS", None, [True, False]]
+    "Por mes": "month",
+    "Por semana": "week",
+    "Por trimestre": "quarter",
+    "Por dia": "day",
 }
 
 class DataComponents:
@@ -95,18 +96,45 @@ class DataComponents:
         rows = result.fetchall()
         return [row[0] for row in rows]
 
-    def secure_fetch_grouped_data(_self, crime_conditions, place_conditions, freq):
+    def secure_fetch_grouped_data(_self, crime_conditions, place_conditions, freq, init_time=None, end_time=None):
         """ Obtiene datos agrupados según los permisos del usuario. """
-        query = f"""
-            SELECT DATE_TRUNC(:freq, date) AS period, COUNT(*) AS count, AVG(pond) AS pond
-            FROM main
-            WHERE ({crime_conditions}) AND ({place_conditions})
-            GROUP BY period
-            ORDER BY period
-        """
+
+        if not init_time or not end_time:
+            query_min_max = "SELECT MIN(date) AS min_date, MAX(date) AS max_date FROM main"
+            with _self.engine.connect() as conn:
+                result = conn.execute(text(query_min_max)).fetchone()
+            print(result)
+            init_time = init_time or result[0]
+            end_time = end_time or result[1]
+
+        date_filter = f"AND date BETWEEN '{init_time}' AND '{end_time}'"
+
+        if freq in freqmap.values():
+            query = f"""
+                SELECT DATE_TRUNC('{freq}', date) AS period, COUNT(*) AS count
+                FROM main
+                WHERE ({crime_conditions}) AND ({place_conditions}) {date_filter}
+                GROUP BY period
+                ORDER BY period
+            """
+        elif freq == "Custom":
+            query = f"""
+                SELECT COUNT(*) AS count
+                FROM main
+                WHERE ({crime_conditions}) AND ({place_conditions}) {date_filter}
+            """
+        else:
+            query = f"""
+                SELECT date, crimecodedesc, areaname
+                FROM main
+                WHERE ({crime_conditions}) AND ({place_conditions}) {date_filter}
+                ORDER BY date"""
+
+
         with _self.engine.connect() as conn:
-            result = conn.execute(text(query), {'freq': freq[0]})
-        rows = result.fetchall()
+            result = conn.execute(text(query))
+            rows = result.fetchall()
+
         columns = result.keys()
         return pd.DataFrame(rows, columns=columns) if rows else None
 

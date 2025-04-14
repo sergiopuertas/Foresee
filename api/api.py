@@ -1,5 +1,4 @@
 from lib import *
-
 # ---------------------------
 # Modelos Pydantic para request/response
 # ---------------------------
@@ -28,9 +27,10 @@ class RegisterUser(BaseModel):
 class GroupedDataRequest(BaseModel):
     chosen_crime: Optional[List[str]] = None
     chosen_place: Optional[List[str]] = None
-    frequency: str  # "Por trimestre", "Por mes" o "Por semana"
+    group: Optional[str] = ""
     init_time : Optional[datetime] = None
     end_time : Optional[datetime] = None
+
 
 
 # ---------------------------
@@ -180,6 +180,8 @@ def secure_places(see: str, user: User = Depends(get_current_user), eng: Engine 
   "Authorization": "Bearer <token>"
 }
 """
+
+
 @app.post("/grouped-data")
 def get_grouped_data(request: GroupedDataRequest,
                      user: User = Depends(get_current_user),
@@ -187,16 +189,30 @@ def get_grouped_data(request: GroupedDataRequest,
     data_components = DataComponents(eng)
 
     crimes = request.chosen_crime[0].replace("'", "").split(",") if request.chosen_crime else None
-    places = data_components.get_secure_unique_places(user.email[0] if isinstance(user.email, pd.Series) else user.email, "SEE_LOCAL")
+    email = user.email[0] if isinstance(user.email, pd.Series) else user.email
+    places = data_components.get_secure_unique_places(email, "SEE_LOCAL")
+
     if request.chosen_place and any(place not in places for place in request.chosen_place):
         raise HTTPException(status_code=403, detail="No autorizado para acceder a este lugar")
 
     crime_cond, place_cond = build_conditions(crimes, request.chosen_place)
-    df = data_components.secure_fetch_grouped_data(crime_cond, place_cond, freqmap[request.frequency]).drop(columns=['pond'])
-    df['period'] = pd.to_datetime(df['period']).dt.date
-    if request.init_time and request.end_time:
+    freq  = freqmap[request.group] if request.group in freqmap.keys() else request.group
+    df = data_components.secure_fetch_grouped_data(
+        crime_cond, place_cond,
+        freq,
+        request.init_time, request.end_time
+    )
+
+    if df is None:
+        return []
+
+    # Si hay fecha, filtramos por periodo solo si es un dataframe con period
+    if "period" in df.columns and request.init_time and request.end_time:
+        df['period'] = pd.to_datetime(df['period']).dt.date
         df = df[(df['period'] >= request.init_time.date()) & (df['period'] <= request.end_time.date())]
+
     return df.to_dict(orient="records")
+
 
 # Endpoint para predecir datos
 """

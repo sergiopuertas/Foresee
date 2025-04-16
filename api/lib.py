@@ -6,7 +6,7 @@ import uuid
 from argon2 import PasswordHasher
 import uvicorn
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Depends, Header, Response
+from fastapi import FastAPI, HTTPException, Depends, Header, Response, Request
 from pydantic import BaseModel, EmailStr
 import uuid
 from datetime import datetime
@@ -107,7 +107,6 @@ class DataComponents:
             end_time = end_time or result[1]
 
         date_filter = f"AND date BETWEEN '{init_time}' AND '{end_time}'"
-        print(freq)
         if freq in['month', 'week', 'quarter', 'day']:
             query = f"""
                 SELECT DATE_TRUNC('{freq}', date) AS period, COUNT(*) AS count
@@ -127,7 +126,7 @@ class DataComponents:
                 SELECT date AS period, crimecodedesc, areaname
                 FROM main
                 WHERE ({crime_conditions}) AND ({place_conditions}) {date_filter}
-                ORDER BY date"""
+                ORDER BY period"""
         else:
             raise HTTPException(status_code=400, detail="Frecuencia no válida o no soportada")
 

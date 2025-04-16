@@ -27,7 +27,7 @@ class RegisterUser(BaseModel):
 class GroupedDataRequest(BaseModel):
     chosen_crime: Optional[List[str]] = None
     chosen_place: Optional[List[str]] = None
-    group: Optional[str] = ""
+    group: Optional[str] = None
     init_time : Optional[datetime] = None
     end_time : Optional[datetime] = None
 
@@ -35,9 +35,11 @@ class GroupedDataRequest(BaseModel):
 class PredictRequest(BaseModel):
     chosen_crime: Optional[List[str]] = None
     chosen_place: Optional[List[str]] = None
-    frequency: Optional[str] = ""
-    n_steps: Optional[int] = 6
+    frequency: str = ""
+    n_steps: int = 6
 
+class DeleteRequest(BaseModel):
+    email: EmailStr
 # ---------------------------
 # FastAPI: Endpoints y Autenticación
 # ---------------------------
@@ -57,11 +59,26 @@ def authenticate_user(email: str, password: str, eng: Engine ) -> str:
         return token
     raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
-def get_current_user(x_token: str = Header(...), eng: Engine = Depends(get_engine)) -> User:
-    email = TOKENS.get(x_token)
-    if not email:
+def get_current_user(
+    request: Request,
+    x_token: Optional[str] = Header(None),
+    eng: Engine = Depends(get_engine)
+) -> User:
+    token = None
+
+    # 1. Primero, intenta obtenerlo del header
+    if x_token:
+        token = x_token
+    else:
+        # 2. Si no hay header, buscá en la cookie
+        cookie_token = request.cookies.get("Authorization")
+        if cookie_token and cookie_token.startswith("Bearer "):
+            token = cookie_token.split("Bearer ")[1]
+
+    if not token or token not in TOKENS:
         raise HTTPException(status_code=401, detail="Token inválido")
 
+    email = TOKENS[token]
     data_components = DataComponents(eng)
     user = data_components.get_user(email)
     if user is None:
@@ -133,7 +150,11 @@ def permissions(user: User = Depends(get_current_user), eng: Engine = Depends(ge
 }
 """
 @app.post("/logout")
-def logout(response: Response):
+def logout(request: Request, response: Response):
+    x_token = request.cookies.get("Authorization")
+    if x_token and x_token.startswith("Bearer "):
+        token = x_token.split("Bearer ")[1]
+        TOKENS.pop(token, None)
     # Eliminamos la cookie
     response.delete_cookie("Authorization")
     return {"message": "Sesión cerrada exitosamente"}
@@ -213,7 +234,8 @@ def get_grouped_data(request: GroupedDataRequest,
     if df is None:
         return []
 
-    df['period'] = pd.to_datetime(df['period']).dt.date
+    if 'period' in df.columns:
+        df['period'] = pd.to_datetime(df['period']).dt.date
 
     return df.to_dict(orient="records")
 
@@ -248,6 +270,8 @@ def predict_data(request: PredictRequest,
     chosen_place = request.chosen_place
     frequency = request.frequency
     n_steps = request.n_steps
+    if frequency is None or n_steps is None:
+        raise HTTPException(status_code=400, detail="Rellena los campos necesarios (frecuencia y steps)")
 
     data_components = DataComponents(eng)
     perms = data_components.get_user_permissions(user.email[0] if isinstance(user.email, pd.Series) else user.email)
@@ -267,7 +291,7 @@ def predict_data(request: PredictRequest,
     forecast['yhat'] = forecast['yhat'].round(0).astype(int)
     forecast['yhat_lower'] = forecast['yhat_lower'].round(0).astype(int)
     forecast['yhat_upper'] = forecast['yhat_upper'].round(0).astype(int)
-    return forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper','tipo']].to_dict(orient='records')
+    return forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']].to_dict(orient='records')
 
 # Endpoint para ingresar nuevos datos (requiere rol "Nuevos datos SI")
 """
@@ -361,6 +385,53 @@ def register_user(new_user: RegisterUser,
     if success:
         return {"status": "Usuario creado"}
     raise HTTPException(status_code=500, detail="Error al crear usuario")
+
+
+@app.delete("/delete-user")
+def delete_user(request: DeleteRequest,
+                user: User = Depends(get_current_user),
+                eng: Engine = Depends(get_engine)):
+    data_components = DataComponents(eng)
+    email = request.email
+    # Verificar permisos
+    perms = data_components.get_user_permissions(user.email[0] if isinstance(user.email, pd.Series) else user.email)
+    if "Nuevos usuarios SI" not in perms:
+        raise HTTPException(status_code=403, detail="No autorizado para eliminar usuarios")
+
+    # Verificar si el usuario existe
+    if data_components.get_user(email) is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    # Eliminar usuario
+    try:
+        # Verificar si el usuario es administrador
+        admin_check_query = """
+        SELECT r.name 
+        FROM usuarios 
+        JOIN user_roles ur ON usuarios.id = ur.user_id 
+        JOIN roles r ON ur.role_id = r.id 
+        WHERE usuarios.email = :email
+        """
+        with eng.connect() as conn:
+            result = conn.execute(text(admin_check_query), {"email": email}).fetchall()
+            if any(row[0] == "ADMIN" for row in result):
+                raise HTTPException(status_code=403, detail="No se puede eliminar un usuario administrador")
+
+        # Eliminar el usuario si no es administrador
+        query = """
+        DELETE FROM usuarios 
+        USING user_roles ur, roles r 
+        WHERE usuarios.email = :email 
+        AND usuarios.id = ur.user_id 
+        AND ur.role_id = r.id 
+        AND r.name != 'ADMIN'
+        """
+        with eng.connect() as conn:
+            conn.execute(text(query), {"email": email})
+            conn.commit()
+        return {"status": "Usuario eliminado"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Endpoint raíz para verificar si el API está corriendo
 @app.get("/")

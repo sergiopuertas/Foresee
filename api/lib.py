@@ -224,7 +224,7 @@ def format_quarter(date):
 
 def build_conditions(chosen_crime, chosen_place):
     if chosen_crime is not None:
-        if not all(crime not in category_map.keys() for crime in chosen_crime):
+        if any(crime not in category_map.keys() for crime in chosen_crime):
             raise HTTPException(status_code=400, detail="Crimen no válido")
     crime_conditions = " OR ".join(
         [f"crimecodedesc = '{category_map[crime]}'" for crime in chosen_crime]

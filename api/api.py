@@ -2,43 +2,47 @@ from lib import *
 # ---------------------------
 # Modelos Pydantic para request/response
 # ---------------------------
-class LoginRequest(BaseModel):
+class StrictBaseModel(BaseModel):
+    class Config:
+        extra = 'forbid'
+
+class LoginRequest(StrictBaseModel):
     email: EmailStr
     password: str
 
-class User(BaseModel):
+class User(StrictBaseModel):
     id: str
     email: EmailStr
-    full_name: str
+    name: str
     area: str
 
-class NewCrime(BaseModel):
+class NewCrime(StrictBaseModel):
     date: datetime
-    crimecodedesc: str
-    areaname: str
+    crime: str
+    area: str
 
-class RegisterUser(BaseModel):
+class RegisterUser(StrictBaseModel):
     email: EmailStr
-    full_name: str
+    name: str
     area: str
     password: str
     role: str
 
-class GroupedDataRequest(BaseModel):
-    chosen_crime: Optional[List[str]] = None
-    chosen_place: Optional[List[str]] = None
+class GroupedDataRequest(StrictBaseModel):
+    crime: Optional[List[str]] = None
+    place: Optional[List[str]] = None
     group: Optional[str] = None
-    init_time : Optional[datetime] = None
-    end_time : Optional[datetime] = None
+    init_time : datetime = None
+    end_time : datetime = None
 
 
-class PredictRequest(BaseModel):
-    chosen_crime: Optional[List[str]] = None
-    chosen_place: Optional[List[str]] = None
-    frequency: str = ""
-    n_steps: int = 6
+class PredictRequest(StrictBaseModel):
+    crime: Optional[List[str]] = None
+    place: Optional[List[str]] = None
+    group: str = ""
+    steps: int = 6
 
-class DeleteRequest(BaseModel):
+class DeleteRequest(StrictBaseModel):
     email: EmailStr
 # ---------------------------
 # FastAPI: Endpoints y Autenticación
@@ -208,22 +212,24 @@ def secure_places(see: str, user: User = Depends(get_current_user), eng: Engine 
 """
 
 
-@app.post("/grouped-data")
+@app.post("/retrieve-data")
 def get_grouped_data(request: GroupedDataRequest,
                      user: User = Depends(get_current_user),
                      eng: Engine = Depends(get_engine)):
     data_components = DataComponents(eng)
-
-    crimes = request.chosen_crime[0].replace("'", "").split(",") if request.chosen_crime else None
+    if not request.init_time or not request.end_time:
+        raise HTTPException(status_code=400,
+                            detail="Incluye la fecha de inicio y de final para continuar con la consulta")
+    crimes = request.crime[0].replace("'", "").split(",") if request.crime else None
     email = user.email[0] if isinstance(user.email, pd.Series) else user.email
     perms = data_components.get_user_permissions(email)
     see_perms = [perm for perm in perms if "SEE" in perm][0]
     places = data_components.get_secure_unique_places(email, see_perms)
-
-    if request.chosen_place and any(place not in places for place in request.chosen_place):
+    crime_cond, place_cond = build_conditions(crimes, request.place)
+    if request.place and any(place not in places for place in request.place):
         raise HTTPException(status_code=403, detail="No autorizado para acceder a este lugar")
 
-    crime_cond, place_cond = build_conditions(crimes, request.chosen_place)
+
     freq  = freqmap[request.group][0] if request.group in freqmap.keys() else request.group
     df = data_components.secure_fetch_grouped_data(
         crime_cond, place_cond,
@@ -246,7 +252,7 @@ def get_grouped_data(request: GroupedDataRequest,
 {
   "chosen_crime": ["Robo"],
   "chosen_place": ["COMUNA 1"],
-  "frequency": "Por mes",
+  "frequency": "mes",
   "n_steps": 6,
   "ponder": true
 }
@@ -266,10 +272,10 @@ def predict_data(request: PredictRequest,
                  user: User = Depends(get_current_user),
                  eng: Engine = Depends(get_engine)):
 
-    chosen_crime = request.chosen_crime
-    chosen_place = request.chosen_place
-    frequency = request.frequency
-    n_steps = request.n_steps
+    chosen_crime = request.crime
+    chosen_place = request.place
+    frequency = request.group
+    n_steps = request.steps
     if frequency is None or n_steps is None:
         raise HTTPException(status_code=400, detail="Rellena los campos necesarios (frecuencia y steps)")
 
@@ -281,6 +287,8 @@ def predict_data(request: PredictRequest,
     crimes = chosen_crime[0].replace("'", "").split(",") if chosen_crime else None
     crime_cond, place_cond = build_conditions(crimes, chosen_place)
 
+    if frequency not in freqmap.keys():
+        raise HTTPException(status_code=400, detail="Frecuencia no válida")
     df = data_components.secure_fetch_grouped_data(crime_cond, place_cond, freqmap[frequency][0])
 
     df['period'] = pd.to_datetime(df['period']).dt.date
@@ -330,8 +338,8 @@ def new_data(record: NewCrime,
         with eng.connect() as conn:
             recdf = pd.DataFrame([{
                 "date": record.date,
-                "crimecodedesc": category_map[record.crimecodedesc],
-                "areaname": record.areaname
+                "crimecodedesc": category_map[record.crime],
+                "areaname": record.area
             }])
             recdf = apply_pond(recdf)
             recdf.to_sql(
@@ -381,7 +389,7 @@ def register_user(new_user: RegisterUser,
         raise HTTPException(status_code=403, detail="No autorizado para crear usuarios")
     if data_components.get_user(new_user.email):
         raise HTTPException(status_code=400, detail="El usuario ya existe")
-    success = data_components.create_user(new_user.email, new_user.full_name, new_user.area, new_user.password, new_user.role)
+    success = data_components.create_user(new_user.email, new_user.name, new_user.area, new_user.password, new_user.role)
     if success:
         return {"status": "Usuario creado"}
     raise HTTPException(status_code=500, detail="Error al crear usuario")

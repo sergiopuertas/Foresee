@@ -7,7 +7,8 @@ from argon2 import PasswordHasher
 import uvicorn
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Depends, Header, Response, Request
-from pydantic import BaseModel, EmailStr
+
+from pydantic import BaseModel, EmailStr,Extra
 import uuid
 from datetime import datetime
 import dotenv
@@ -41,10 +42,10 @@ category_map = {
 }
 
 freqmap = {
-    "Por mes": ["month", 1, 24, "MS", "%b %Y", [True, False]],
-    "Por semana": ["week", 1, 104, "W", "%d %b %Y", [True, True]],
-    "Por trimestre": ["quarter", 1, 16, "QS", None, [True, False]],
-    "Por día":["day", 1, 365, "D", "%d %b %Y", [True, True]],
+    "mes": ["month", 1, 24, "MS", "%b %Y", [True, False]],
+    "semana": ["week", 1, 104, "W", "%d %b %Y", [True, True]],
+    "trimestre": ["quarter", 1, 16, "QS", None, [True, False]],
+    "día":["day", 1, 365, "D", "%d %b %Y", [True, True]],
 }
 
 class DataComponents:
@@ -99,12 +100,23 @@ class DataComponents:
     def secure_fetch_grouped_data(_self, crime_conditions, place_conditions, freq, init_time=None, end_time=None):
         """ Obtiene datos agrupados según los permisos del usuario. """
 
-        if not init_time or not end_time:
-            query_min_max = "SELECT MIN(date) AS min_date, MAX(date) AS max_date FROM main"
-            with _self.engine.connect() as conn:
+        query_min_max = "SELECT MIN(date) AS min_date, MAX(date) AS max_date FROM main"
+        with _self.engine.connect() as conn:
                 result = conn.execute(text(query_min_max)).fetchone()
-            init_time = init_time or result[0]
-            end_time = end_time or result[1]
+
+        if init_time is None or end_time is None:
+            init_time = result[0]
+            end_time = result[1]
+        else:
+            init_time = init_time.date()
+            end_time = end_time.date()
+
+        if init_time > end_time:
+            raise HTTPException(status_code=400, detail="La fecha inicial no puede ser mayor que la fecha final")
+        if end_time > result[1]:
+            raise HTTPException(status_code=400, detail=f"La fecha final no puede ser mayor que la fecha máxima ({result[1]})")
+        if init_time < result[0]:
+            raise HTTPException(status_code=400, detail=f"La fecha inicial no puede ser menor que la fecha mínima ({result[0]})")
 
         date_filter = f"AND date BETWEEN '{init_time}' AND '{end_time}'"
         if freq in['month', 'week', 'quarter', 'day']:
@@ -211,6 +223,9 @@ def format_quarter(date):
 
 
 def build_conditions(chosen_crime, chosen_place):
+    if chosen_crime is not None:
+        if not all(crime not in category_map.keys() for crime in chosen_crime):
+            raise HTTPException(status_code=400, detail="Crimen no válido")
     crime_conditions = " OR ".join(
         [f"crimecodedesc = '{category_map[crime]}'" for crime in chosen_crime]
     ) if chosen_crime else "1=1"
